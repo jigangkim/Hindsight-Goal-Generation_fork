@@ -88,15 +88,14 @@ class MatchSampler:
 		candidate_id = []
 
 		agent = self.args.agent
-		achieved_value = []
-		for i in range(len(achieved_pool)):
-			obs = [ goal_concat(achieved_pool_init_state[i], achieved_pool[i][j]) for  j in range(achieved_pool[i].shape[0])] # (s_0, \phi(s_t))t=1:T
-			feed_dict = {
-				agent.raw_obs_ph: obs
-			}
-			value = agent.sess.run(agent.q_pi, feed_dict)[:,0] # V(s_0; \phi(s_t))
-			value = np.clip(value, -1.0/(1.0-self.args.gamma), 0)
-			achieved_value.append(value.copy())
+		get_obs = lambda x, y: np.concatenate([x, y], axis=-1)
+		obs = np.concatenate([get_obs(np.repeat(np.atleast_2d(s0),len(traj),axis=0), traj) for s0, traj in zip(achieved_pool_init_state, achieved_pool)], axis=0)
+		feed_dict = {
+			agent.raw_obs_ph: obs
+		}
+		value = agent.sess.run(agent.q_pi, feed_dict)[:,0] # V(s_0; \phi(s_t))
+		value = np.clip(value, -1.0/(1.0-self.args.gamma), 0)
+		achieved_value = np.split(np.squeeze(value), np.cumsum([len(traj) for traj in achieved_pool])[:-1], axis=0)
 
 		n = 0 # node number
 		graph_id = {'achieved':[],'desired':[]}
