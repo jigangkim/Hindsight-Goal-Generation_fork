@@ -64,7 +64,7 @@ class MatchSampler:
 		goal[:dim] += np.random.normal(0, noise_std, size=dim)
 		return goal.copy()
 
-	def sample(self, idx):
+	def sample(self, idx): # get HGG goal
 		if self.args.env[:5]=='Fetch':
 			return self.add_noise(self.pool[idx])
 		else:
@@ -82,7 +82,7 @@ class MatchSampler:
 			self.pool = copy.deepcopy(desired_goals)
 			return
 
-		achieved_pool, achieved_pool_init_state = self.achieved_trajectory_pool.pad()
+		achieved_pool, achieved_pool_init_state = self.achieved_trajectory_pool.pad() # (\phi(s_t)t=1:T, s_0) for pool_length(=1000) trajectories
 		candidate_goals = []
 		candidate_edges = []
 		candidate_id = []
@@ -90,35 +90,35 @@ class MatchSampler:
 		agent = self.args.agent
 		achieved_value = []
 		for i in range(len(achieved_pool)):
-			obs = [ goal_concat(achieved_pool_init_state[i], achieved_pool[i][j]) for  j in range(achieved_pool[i].shape[0])]
+			obs = [ goal_concat(achieved_pool_init_state[i], achieved_pool[i][j]) for  j in range(achieved_pool[i].shape[0])] # (s_0, \phi(s_t))t=1:T
 			feed_dict = {
 				agent.raw_obs_ph: obs
 			}
-			value = agent.sess.run(agent.q_pi, feed_dict)[:,0]
+			value = agent.sess.run(agent.q_pi, feed_dict)[:,0] # V(s_0; \phi(s_t))
 			value = np.clip(value, -1.0/(1.0-self.args.gamma), 0)
 			achieved_value.append(value.copy())
 
-		n = 0
+		n = 0 # node number
 		graph_id = {'achieved':[],'desired':[]}
-		for i in range(len(achieved_pool)):
+		for i in range(len(achieved_pool)): # \phi(s_t)t=1:T for pool_length(=1000) trajectories
 			n += 1
 			graph_id['achieved'].append(n)
-		for i in range(len(desired_goals)):
+		for i in range(len(desired_goals)): # g* K(=50)
 			n += 1
 			graph_id['desired'].append(n)
 		n += 1
 		self.match_lib.clear(n)
 
-		for i in range(len(achieved_pool)):
+		for i in range(len(achieved_pool)): # pool_length(=1000)
 			self.match_lib.add(0, graph_id['achieved'][i], 1, 0)
-		for i in range(len(achieved_pool)):
-			for j in range(len(desired_goals)):
-				res = np.sqrt(np.sum(np.square(achieved_pool[i]-desired_goals[j]),axis=1)) - achieved_value[i]/(self.args.hgg_L/self.max_dis/(1-self.args.gamma))
-				match_dis = np.min(res)+self.goal_distance(achieved_pool[i][0], initial_goals[j])*self.args.hgg_c
+		for i in range(len(achieved_pool)): # pool_length(=1000)
+			for j in range(len(desired_goals)): # K(=50)
+				res = np.sqrt(np.sum(np.square(achieved_pool[i]-desired_goals[j]),axis=1)) - achieved_value[i]/(self.args.hgg_L/self.max_dis/(1-self.args.gamma)) # l2_norm(g* - \phi(s_t)) - 1/L*V(s_0; \phi(s_t))
+				match_dis = np.min(res)+self.goal_distance(achieved_pool[i][0], initial_goals[j])*self.args.hgg_c # min_t{res} + c*l2_norm(\phi(s_0) - \phi(s*_0))
 				match_idx = np.argmin(res)
 
 				edge = self.match_lib.add(graph_id['achieved'][i], graph_id['desired'][j], 1, c_double(match_dis))
-				candidate_goals.append(achieved_pool[i][match_idx])
+				candidate_goals.append(achieved_pool[i][match_idx]) # \phi(s_tmin) -> g_cand
 				candidate_edges.append(edge)
 				candidate_id.append(j)
 		for i in range(len(desired_goals)):
@@ -151,26 +151,26 @@ class HGGLearner:
 	def learn(self, args, env, env_test, agent, buffer):
 		initial_goals = []
 		desired_goals = []
-		for i in range(args.episodes):
+		for i in range(args.episodes): # sample from target distribution (K=50)
 			obs = self.env_List[i].reset()
 			goal_a = obs['achieved_goal'].copy()
 			goal_d = obs['desired_goal'].copy()
-			initial_goals.append(goal_a.copy())
-			desired_goals.append(goal_d.copy())
+			initial_goals.append(goal_a.copy()) # \phi(s*_0)
+			desired_goals.append(goal_d.copy()) # g*
 
-		self.sampler.update(initial_goals, desired_goals)
+		self.sampler.update(initial_goals, desired_goals) # weighted bipartite matching
 
 		achieved_trajectories = []
 		achieved_init_states = []
-		for i in range(args.episodes):
+		for i in range(args.episodes): # for i = 1, 2, ..., K(=50)
 			obs = self.env_List[i].get_obs()
 			init_state = obs['observation'].copy()
-			explore_goal = self.sampler.sample(i)
-			self.env_List[i].goal = explore_goal.copy()
+			explore_goal = self.sampler.sample(i) # construct intermediate task distribution
+			self.env_List[i].goal = explore_goal.copy() # critical step: hindsight goal-oriented exploration
 			obs = self.env_List[i].get_obs()
 			current = Trajectory(obs)
 			trajectory = [obs['achieved_goal'].copy()]
-			for timestep in range(args.timesteps):
+			for timestep in range(args.timesteps): # for t = 0, 1, ..., H-1(=49)
 				action = agent.step(obs, explore=True)
 				obs, reward, done, info = self.env_List[i].step(action)
 				trajectory.append(obs['achieved_goal'].copy())
@@ -183,13 +183,13 @@ class HGGLearner:
 			agent.normalizer_update(buffer.sample_batch())
 
 			if buffer.steps_counter>=args.warmup:
-				for _ in range(args.train_batches):
+				for _ in range(args.train_batches): # for i = 1, 2, ..., M(=20)
 					info = agent.train(buffer.sample_batch())
 					args.logger.add_dict(info)
 				agent.target_update()
 
 		selection_trajectory_idx = {}
-		for i in range(self.args.episodes):
+		for i in range(self.args.episodes): # reject trajectories with dist(\phi(s_0),\phi(s_T)) ~= 0
 			if self.goal_distance(achieved_trajectories[i][0], achieved_trajectories[i][-1])>0.01:
 				selection_trajectory_idx[i] = True
 		for idx in selection_trajectory_idx.keys():
