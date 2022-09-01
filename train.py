@@ -19,6 +19,30 @@ if __name__=='__main__':
 	for key in agent.train_info.keys():
 		args.logger.add_item(key, 'scalar')
 
+	# HGG info
+	hgg_info_keys = [
+		'sampler/InitialDist/min',
+		'sampler/InitialDist/mean',
+		'sampler/InitialDist/max',
+		'sampler/DesiredDist/min',
+		'sampler/DesiredDist/mean',
+		'sampler/DesiredDist/max',
+		'sampler/Value/min',
+		'sampler/Value/mean',
+		'sampler/Value/max',
+		'sampler/CandidateGoals/InitialDist/min',
+		'sampler/CandidateGoals/InitialDist/mean',
+		'sampler/CandidateGoals/InitialDist/max',
+		'sampler/CandidateGoals/DesiredDist/min',
+		'sampler/CandidateGoals/DesiredDist/mean',
+		'sampler/CandidateGoals/DesiredDist/max',
+		'sampler/CandidateGoals/Value/min',
+		'sampler/CandidateGoals/Value/mean',
+		'sampler/CandidateGoals/Value/max',
+	]
+	for key in hgg_info_keys:
+		args.logger.add_item(key, 'scalar')
+
 	# Test info
 	for key in tester.info:
 		args.logger.add_item(key, 'scalar')

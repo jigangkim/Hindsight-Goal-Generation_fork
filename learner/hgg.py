@@ -86,6 +86,9 @@ class MatchSampler:
 		candidate_goals = []
 		candidate_edges = []
 		candidate_id = []
+		candidate_initial_dist = []
+		candidate_desired_dist = []
+		candidate_value = []
 
 		agent = self.args.agent
 		get_obs = lambda x, y: np.concatenate([x, y], axis=-1)
@@ -111,27 +114,66 @@ class MatchSampler:
 		for i in range(len(achieved_pool)): # pool_length(=1000)
 			self.match_lib.add(0, graph_id['achieved'][i], 1, 0)
 		for i in range(len(achieved_pool)): # pool_length(=1000)
+			initial_dists, desired_dists, values = [], [], []
 			for j in range(len(desired_goals)): # K(=50)
 				res = np.sqrt(np.sum(np.square(achieved_pool[i]-desired_goals[j]),axis=1)) - achieved_value[i]/(self.args.hgg_L/self.max_dis/(1-self.args.gamma)) # l2_norm(g* - \phi(s_t)) - 1/L*V(s_0; \phi(s_t))
 				match_dis = np.min(res)+self.goal_distance(achieved_pool[i][0], initial_goals[j])*self.args.hgg_c # min_t{res} + c*l2_norm(\phi(s_0) - \phi(s*_0))
 				match_idx = np.argmin(res)
+				
+				initial_dist = self.goal_distance(achieved_pool[i][0], initial_goals[j])/self.max_dis
+				desired_dist = (np.sqrt(np.sum(np.square(achieved_pool[i]-desired_goals[j]),axis=1))/self.max_dis)[match_idx]
+				value = (achieved_value[i]*(1-self.args.gamma))[match_idx]
+				initial_dists.append(initial_dist)
+				desired_dists.append(desired_dist)
+				values.append(value)
 
 				edge = self.match_lib.add(graph_id['achieved'][i], graph_id['desired'][j], 1, c_double(match_dis))
 				candidate_goals.append(achieved_pool[i][match_idx]) # \phi(s_tmin) -> g_cand
 				candidate_edges.append(edge)
 				candidate_id.append(j)
+			candidate_initial_dist.append(initial_dists)
+			candidate_desired_dist.append(desired_dists)
+			candidate_value.append(values)
 		for i in range(len(desired_goals)):
 			self.match_lib.add(graph_id['desired'][i], n, 1, 0)
 
 		match_count = self.match_lib.cost_flow(0,n)
 		assert match_count==self.length
 
-		explore_goals = [0]*self.length
+		explore_goals = [None]*self.length
+		explore_goals_info = {
+			'initial_dist': [None]*self.length,
+			'desired_dist': [None]*self.length,
+			'value': [None]*self.length
+		}
 		for i in range(len(candidate_goals)):
 			if self.match_lib.check_match(candidate_edges[i])==1:
 				explore_goals[candidate_id[i]] = candidate_goals[i].copy()
-		assert len(explore_goals)==self.length
+				explore_goals_info['initial_dist'][candidate_id[i]] = np.array(candidate_initial_dist).flatten()[i]
+				explore_goals_info['desired_dist'][candidate_id[i]] = np.array(candidate_desired_dist).flatten()[i]
+				explore_goals_info['value'][candidate_id[i]] = np.array(candidate_value).flatten()[i]
+		if None in explore_goals_info['initial_dist']:
+			raise RuntimeError('Goal mismatch!')
 		self.pool = np.array(explore_goals)
+
+		self.args.logger.add_record('sampler/InitialDist/min', np.min(candidate_initial_dist))
+		self.args.logger.add_record('sampler/InitialDist/mean', np.mean(candidate_initial_dist))
+		self.args.logger.add_record('sampler/InitialDist/max', np.max(candidate_initial_dist))
+		self.args.logger.add_record('sampler/DesiredDist/min', np.min(candidate_desired_dist))
+		self.args.logger.add_record('sampler/DesiredDist/mean', np.mean(candidate_desired_dist))
+		self.args.logger.add_record('sampler/DesiredDist/max', np.max(candidate_desired_dist))
+		self.args.logger.add_record('sampler/Value/min', np.min(candidate_value))
+		self.args.logger.add_record('sampler/Value/mean', np.mean(candidate_value))
+		self.args.logger.add_record('sampler/Value/max', np.max(candidate_value))
+		self.args.logger.add_record('sampler/CandidateGoals/InitialDist/min', np.min(explore_goals_info['initial_dist']))
+		self.args.logger.add_record('sampler/CandidateGoals/InitialDist/mean', np.mean(explore_goals_info['initial_dist']))
+		self.args.logger.add_record('sampler/CandidateGoals/InitialDist/max', np.max(explore_goals_info['initial_dist']))
+		self.args.logger.add_record('sampler/CandidateGoals/DesiredDist/min', np.min(explore_goals_info['desired_dist']))
+		self.args.logger.add_record('sampler/CandidateGoals/DesiredDist/mean', np.mean(explore_goals_info['desired_dist']))
+		self.args.logger.add_record('sampler/CandidateGoals/DesiredDist/max', np.max(explore_goals_info['desired_dist']))
+		self.args.logger.add_record('sampler/CandidateGoals/Value/min', np.min(explore_goals_info['value']))
+		self.args.logger.add_record('sampler/CandidateGoals/Value/mean', np.mean(explore_goals_info['value']))
+		self.args.logger.add_record('sampler/CandidateGoals/Value/max', np.max(explore_goals_info['value']))
 
 class HGGLearner:
 	def __init__(self, args):
@@ -164,7 +206,9 @@ class HGGLearner:
 		for i in range(args.episodes): # for i = 1, 2, ..., K(=50)
 			obs = self.env_List[i].get_obs()
 			init_state = obs['observation'].copy()
-			explore_goal = self.sampler.sample(i) # construct intermediate task distribution
+			goal_idx = i
+			# goal_idx = np.random.randint(0, args.episodes)
+			explore_goal = self.sampler.sample(goal_idx) # construct intermediate task distribution
 			self.env_List[i].goal = explore_goal.copy() # critical step: hindsight goal-oriented exploration
 			obs = self.env_List[i].get_obs()
 			current = Trajectory(obs)
@@ -193,3 +237,5 @@ class HGGLearner:
 				selection_trajectory_idx[i] = True
 		for idx in selection_trajectory_idx.keys():
 			self.achieved_trajectory_pool.insert(achieved_trajectories[idx].copy(), achieved_init_states[idx].copy())
+		# for s0_T, s0 in zip(achieved_trajectories, achieved_init_states):
+		# 	self.achieved_trajectory_pool.insert(s0_T.copy(), s0.copy())
